@@ -32,6 +32,7 @@ type AgentClient struct {
 	nextConnID int64
 	conns      map[int64]net.Conn
 	dataChs    map[int64]chan []byte
+	cleanups   map[int64]func()
 	address    string
 
 	stream agent.AgentService_ConnectClient
@@ -39,9 +40,10 @@ type AgentClient struct {
 
 func NewAgentClient(address string) *AgentClient {
 	a := &AgentClient{
-		conns:   make(map[int64]net.Conn),
-		address: address,
-		dataChs: make(map[int64]chan []byte),
+		conns:    make(map[int64]net.Conn),
+		address:  address,
+		dataChs:  make(map[int64]chan []byte),
+		cleanups: make(map[int64]func()),
 	}
 
 	return a
@@ -113,12 +115,29 @@ func (a *AgentClient) Serve(stopCh <-chan struct{}) {
 
 			cleanup := func() {
 				once.Do(func() {
-					conn.Close()
+					resp := &agent.Packet{
+						Type:    agent.PacketType_CLOSE_RSP,
+						Payload: &agent.Packet_CloseResponse{CloseResponse: &agent.CloseResponse{}},
+					}
+					resp.GetCloseResponse().ConnectID = connID
+
+					err := conn.Close()
+					if err != nil {
+						resp.GetCloseResponse().Error = err.Error()
+					}
+
+					if err := a.stream.Send(resp); err != nil {
+						klog.Warningf("stream send error: %v", err)
+					}
+
 					close(a.dataChs[connID])
 					delete(a.conns, connID)
 					delete(a.dataChs, connID)
+					delete(a.cleanups, connID)
 				})
 			}
+
+			a.cleanups[connID] = cleanup
 
 			resp.GetDialResponse().ConnectID = connID
 			if err := a.stream.Send(resp); err != nil {
@@ -138,6 +157,28 @@ func (a *AgentClient) Serve(stopCh <-chan struct{}) {
 				dataCh <- data.Data
 			}
 
+		case agent.PacketType_CLOSE_REQ:
+			klog.Info("received CLOSE_REQ")
+
+			closeReq := pkt.GetCloseRequest()
+			connID := closeReq.ConnectID
+
+			cleanup := a.cleanups[connID]
+			if cleanup == nil {
+				resp := &agent.Packet{
+					Type:    agent.PacketType_CLOSE_RSP,
+					Payload: &agent.Packet_CloseResponse{CloseResponse: &agent.CloseResponse{}},
+				}
+				resp.GetCloseResponse().ConnectID = connID
+				resp.GetCloseResponse().Error = "Unknown connectID"
+				if err := a.stream.Send(resp); err != nil {
+					klog.Warningf("stream send error: %v", err)
+					continue
+				}
+			} else {
+				cleanup()
+			}
+
 		default:
 			klog.Warningf("unrecognized packet type: %+v", pkt)
 		}
@@ -154,17 +195,13 @@ func (a *AgentClient) remoteToProxy(conn net.Conn, connID int64, cleanup func())
 
 	for {
 		n, err := conn.Read(buf[:])
+
 		if err == io.EOF {
+			klog.Info("connection EOF")
 			return
 		} else if err != nil {
-			klog.Errorf("connection read error: %v", err)
-			resp.Payload = &agent.Packet_Data{Data: &agent.Data{
-				Error:     err.Error(),
-				ConnectID: connID,
-			}}
-			if err := a.stream.Send(resp); err != nil {
-				klog.Warningf("stream send error: %v", err)
-			}
+			klog.Warningf("connection read error: %v", err)
+			return
 		} else {
 			resp.Payload = &agent.Packet_Data{Data: &agent.Data{
 				Data:      buf[:n],
