@@ -81,8 +81,6 @@ func (a *AgentClient) Serve(stopCh <-chan struct{}) {
 		default:
 		}
 
-		klog.Info("waiting packets...")
-
 		pkt, err := a.stream.Recv()
 		if err == io.EOF {
 			klog.Info("received EOF, exit")
@@ -121,6 +119,7 @@ func (a *AgentClient) Serve(stopCh <-chan struct{}) {
 				conn:   conn,
 				dataCh: dataCh,
 				cleanFunc: func() {
+					klog.Infof("close connection(id=%d)", connID)
 					resp := &agent.Packet{
 						Type:    agent.PacketType_CLOSE_RSP,
 						Payload: &agent.Packet_CloseResponse{CloseResponse: &agent.CloseResponse{}},
@@ -201,6 +200,7 @@ func (a *AgentClient) remoteToProxy(conn net.Conn, connID int64) {
 
 	for {
 		n, err := conn.Read(buf[:])
+		klog.Infof("received %d bytes from proxy server", n)
 
 		if err == io.EOF {
 			klog.Info("connection EOF")

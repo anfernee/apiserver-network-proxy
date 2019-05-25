@@ -84,6 +84,7 @@ func (s *ProxyServer) Proxy(stream agent.ProxyService_ProxyServer) error {
 		close(recvCh)
 	}()
 
+	// Start goroutine to receive packets from frontend and push to recvCh
 	go func() {
 		for {
 			in, err := stream.Recv()
@@ -92,7 +93,8 @@ func (s *ProxyServer) Proxy(stream agent.ProxyService_ProxyServer) error {
 				return
 			}
 			if err != nil {
-				klog.Warningf("stream read error: %v", err)
+				klog.Warningf(">>> Stream read from frontend error: %v", err)
+				close(stopCh)
 				return
 			}
 
@@ -104,57 +106,70 @@ func (s *ProxyServer) Proxy(stream agent.ProxyService_ProxyServer) error {
 }
 
 func (s *ProxyServer) serveRecvFrontend(stream agent.ProxyService_ProxyServer, recvCh <-chan *agent.Packet) {
-	klog.Info("start serve recv ...")
+	klog.Info("start serving frontend stream")
+
+	var firstConnID int64
+
 	for pkt := range recvCh {
 		switch pkt.Type {
 		case agent.PacketType_DIAL_REQ:
-			klog.Info("received DIAL_REQ")
+			klog.Info(">>> Received DIAL_REQ")
 			if s.Backend == nil {
-				klog.Info("no backend found; drop")
+				klog.Info(">>> No backend found; drop")
 				continue
 			}
 
 			if err := s.Backend.Send(pkt); err != nil {
-				klog.Warningf("send packet to Backend failed: %v", err)
+				klog.Warningf(">>> DIAL_REQ to Backend failed: %v", err)
 			}
 			s.PendingDial[pkt.GetDialRequest().Random] = &ProxyClientConnection{
 				Mode:      "grpc",
 				Grpc:      stream,
 				connected: make(chan struct{}),
 			}
-			klog.Info("DIAL_REQ sent to backend") // got this. but backend didn't receive anything.
+			klog.Info(">>> DIAL_REQ sent to backend") // got this. but backend didn't receive anything.
 
 		case agent.PacketType_CLOSE_REQ:
-			klog.Infof("received CLOSE_REQ(id=%d)", pkt.GetCloseRequest().ConnectID)
+			klog.Infof(">>> Received CLOSE_REQ(id=%d)", pkt.GetCloseRequest().ConnectID)
 			if s.Backend == nil {
-				klog.Info("no backend found; drop")
+				klog.Info(">>> No backend found; drop")
 				continue
 			}
 
 			if err := s.Backend.Send(pkt); err != nil {
-				klog.Warningf("send packet to Backend failed: %v", err)
+				klog.Warningf(">>> CLOSE_REQ to Backend failed: %v", err)
 			}
 			klog.Info("CLOSE_REQ sent to backend")
 
 		case agent.PacketType_DATA:
-			klog.Infof("received DATA(id=%d)", pkt.GetData().ConnectID)
+			connID := pkt.GetData().ConnectID
+			klog.Infof(">>> Received DATA(id=%d)", connID)
+			if firstConnID == 0 {
+				firstConnID = connID
+			} else if firstConnID != connID {
+				klog.Warningf(">>> Data(id=%d) doesn't match first connection id %d", firstConnID, connID)
+			}
+
 			if s.Backend == nil {
-				klog.Info("no backend found; drop")
+				klog.Info(">>> No backend found; drop")
 				continue
 			}
 
 			if err := s.Backend.Send(pkt); err != nil {
-				klog.Warningf("send packet to Backend failed: %v", err)
+				klog.Warningf(">>> DATA to Backend failed: %v", err)
 			}
-			klog.Info("DATA sent to backend")
+			klog.Info(">>> DATA sent to backend")
 
 		default:
-			klog.Infof("Ignore %v packet coming from frontend", pkt.Type)
+			klog.Infof(">>> Ignore %v packet coming from frontend", pkt.Type)
 		}
 	}
+
+	// TODO: When stopped receiving from frontend, send CLOSE_REQ to backend.
+	klog.Infof(">>> Close streaming (id=%d)", firstConnID)
+
 }
 
-// Ignored now
 func (s *ProxyServer) serveSend(stream agent.ProxyService_ProxyServer, sendCh <-chan *agent.Packet) {
 	klog.Info("start serve send ...")
 	for pkt := range sendCh {
@@ -206,40 +221,53 @@ func (s *ProxyServer) Connect(stream agent.AgentService_ConnectServer) error {
 
 // route the packet back to the correct client
 func (s *ProxyServer) serveRecvBackend(stream agent.AgentService_ConnectServer, recvCh <-chan *agent.Packet) {
+	var firstConnID int64
+
 	for pkt := range recvCh {
 		switch pkt.Type {
 		case agent.PacketType_DIAL_RSP:
 			resp := pkt.GetDialResponse()
-			klog.Warningf("Received dial response for %d, connectID is %d", resp.Random, resp.ConnectID)
+			firstConnID = resp.ConnectID
+			klog.Infof("<<< Received DIAL_RSP(rand=%d, id=%d)", resp.Random, resp.ConnectID)
+
 			if client, ok := s.PendingDial[resp.Random]; !ok {
-				klog.Warning("DialResp not recognized; dropped")
+				klog.Warning("<<< DialResp not recognized; dropped")
 			} else {
 				err := client.send(pkt)
 				delete(s.PendingDial, resp.Random)
 				if err != nil {
-					klog.Warningf("dial response send to client stream error: %v", err)
+					klog.Warningf("<<< DIAL_RSP send to client stream error: %v", err)
 				} else {
 					client.connectID = resp.ConnectID
 					s.Frontends[resp.ConnectID] = client
 					close(client.connected)
 				}
 			}
+
 		case agent.PacketType_DATA:
 			resp := pkt.GetData()
+			klog.Infof("<<< Received DATA(id=%d)", resp.ConnectID)
 			if client, ok := s.Frontends[resp.ConnectID]; ok {
 				if err := client.send(pkt); err != nil {
-					klog.Warningf("data send to client stream error: %v", err)
+					klog.Warningf("<<< DATA send to client stream error: %v", err)
 				}
 			}
+			klog.Infof("<<< DATA sent to frontend")
+
 		case agent.PacketType_CLOSE_RSP:
 			resp := pkt.GetCloseResponse()
+			klog.Infof("<<< Received CLOSE_RSP(id=%d)", resp.ConnectID)
 			if client, ok := s.Frontends[resp.ConnectID]; ok {
 				if err := client.send(pkt); err != nil {
-					klog.Warningf("close response send to client stream error: %v", err)
+					klog.Warningf("<<< CLOSE_RSP send to client stream error: %v", err)
 				}
 			}
+			klog.Infof("<<< CLOSE_RSP sent to frontend")
+
 		default:
-			klog.Warningf("unrecognized packet %+v", pkt)
+			klog.Warningf("<<< Unrecognized packet %+v", pkt)
 		}
 	}
+
+	klog.Infof("<<< Close streaming (id=%d)", firstConnID)
 }

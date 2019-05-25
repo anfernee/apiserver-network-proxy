@@ -114,6 +114,7 @@ func (t *grpcTunnel) serve() {
 				close(conn.readCh)
 				conn.closeCh <- resp.Error
 				close(conn.closeCh)
+				delete(t.conns, resp.ConnectID)
 			} else {
 				klog.Warningf("connection id %d not recognized", resp.ConnectID)
 			}
