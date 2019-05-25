@@ -57,6 +57,7 @@ type GrpcProxyClientOptions struct {
 	clientCert string
 	clientKey  string
 	caCert     string
+	remote     string
 }
 
 func (o *GrpcProxyClientOptions) Flags() *pflag.FlagSet {
@@ -64,6 +65,8 @@ func (o *GrpcProxyClientOptions) Flags() *pflag.FlagSet {
 	flags.StringVar(&o.clientCert, "clientCert", o.clientCert, "If non-empty secure communication with this cert.")
 	flags.StringVar(&o.clientKey, "clientKey", o.clientKey, "If non-empty secure communication with this key.")
 	flags.StringVar(&o.caCert, "caCert", o.caCert, "If non-empty the CAs we use to validate clients.")
+	flags.StringVar(&o.remote, "remote", "localhost:80", "remote server address to connect to")
+
 	return flags
 }
 
@@ -157,7 +160,7 @@ func (c *Client) run(o *GrpcProxyClientOptions) error {
 		return err
 	}
 
-	conn, err := tunnel.Dial("tcp", "localhost:8000")
+	conn, err := tunnel.Dial("tcp", o.remote)
 	if err != nil {
 		return err
 	}
