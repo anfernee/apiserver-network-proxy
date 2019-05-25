@@ -20,6 +20,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"k8s.io/klog"
@@ -29,11 +30,12 @@ import (
 const CloseTimeout = 10 * time.Second
 
 type conn struct {
-	stream  agent.ProxyService_ProxyClient
-	connID  int64
-	readCh  chan []byte
-	closeCh chan string
-	rdata   []byte
+	stream    agent.ProxyService_ProxyClient
+	connID    int64
+	readCh    chan []byte
+	closeCh   chan string
+	rdata     []byte
+	closeOnce sync.Once
 }
 
 var _ net.Conn = &conn{}

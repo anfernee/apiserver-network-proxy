@@ -92,7 +92,8 @@ func (s *ProxyServer) Proxy(stream agent.ProxyService_ProxyServer) error {
 				return
 			}
 			if err != nil {
-				klog.Warningf("stream read error: %v", err)
+				klog.Warningf("stream read from frontend error: %v", err)
+				close(stopCh)
 				return
 			}
 
@@ -152,6 +153,9 @@ func (s *ProxyServer) serveRecvFrontend(stream agent.ProxyService_ProxyServer, r
 			klog.Infof("Ignore %v packet coming from frontend", pkt.Type)
 		}
 	}
+
+	// TODO: When stopped receiving from frontend, send CLOSE_REQ to backend.
+
 }
 
 // Ignored now

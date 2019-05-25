@@ -99,10 +99,10 @@ func (t *Tunnel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	klog.Infof("Starting proxy to %q", r.Host)
 	pkt := make([]byte, 1<<12)
+
 	for {
 		n, err := conn.Read(pkt[:])
 		if err == io.EOF {
-			// TODO: Close remote..
 			break
 		}
 		if err != nil {

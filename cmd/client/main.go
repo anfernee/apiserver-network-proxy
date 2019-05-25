@@ -27,6 +27,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -68,7 +69,6 @@ type GrpcProxyClientOptions struct {
 	proxyHost    string
 	proxyPort    int
 	mode         string
-
 }
 
 func (o *GrpcProxyClientOptions) Flags() *pflag.FlagSet {
@@ -83,6 +83,7 @@ func (o *GrpcProxyClientOptions) Flags() *pflag.FlagSet {
 	flags.StringVar(&o.proxyHost, "proxyHost", o.proxyHost, "The host of the proxy server.")
 	flags.IntVar(&o.proxyPort, "proxyPort", o.proxyPort, "The port the proxy server is listening on.")
 	flags.StringVar(&o.mode, "mode", o.mode, "Mode can be either 'grpc' or 'http-connect'.")
+
 	return flags
 }
 
@@ -126,12 +127,6 @@ func (o *GrpcProxyClientOptions) Validate() error {
 	}
 	if o.mode != "grpc" && o.mode != "http-connect" {
 		return fmt.Errorf("mode must be set to either 'grpc' or 'http-connect' not %q", o.mode)
-	}
-	if o.requestPort > 49151 {
-		return fmt.Errorf("please do not try to use ephemeral port %d for the request server port", o.requestPort)
-	}
-	if o.requestPort < 1024 {
-		return fmt.Errorf("please do not try to use reserved port %d for the request server port", o.requestPort)
 	}
 	if o.proxyPort > 49151 {
 		return fmt.Errorf("please do not try to use ephemeral port %d for the proxy server port", o.proxyPort)
@@ -181,7 +176,6 @@ func (c *Client) run(o *GrpcProxyClientOptions) error {
 
 	// Run remote simple http service on server side as
 	// "python -m SimpleHTTPServer"
-
 
 	dialer, err := c.getDialer(o)
 	if err != nil {
@@ -233,6 +227,17 @@ func (c *Client) getDialer(o *GrpcProxyClientOptions) (func(ctx context.Context,
 	})
 
 	var proxyConn net.Conn
+
+	// Setup signal handler
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch)
+
+	go func() {
+		<-ch
+		err := proxyConn.Close()
+		klog.Infof("connection closed: %v", err)
+	}()
+
 	switch o.mode {
 	case "grpc":
 		dialOption := grpc.WithTransportCredentials(transportCreds)
