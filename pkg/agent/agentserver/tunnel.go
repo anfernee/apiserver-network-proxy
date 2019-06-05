@@ -103,12 +103,14 @@ func (t *Tunnel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for {
 		n, err := conn.Read(pkt[:])
 		if err == io.EOF {
+			klog.Infof("EOF from %v", r.Host)
 			break
 		}
 		if err != nil {
 			klog.Errorf("Received error on connection %v", err)
 			break
 		}
+
 		packet := &agent.Packet{
 			Type: agent.PacketType_DATA,
 			Payload: &agent.Packet_Data{

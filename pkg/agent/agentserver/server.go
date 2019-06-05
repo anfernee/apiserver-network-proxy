@@ -39,12 +39,13 @@ func (c *ProxyClientConnection) send(pkt *agent.Packet) error {
 		stream := c.Grpc
 		return stream.Send(pkt)
 	} else if c.Mode == "http-connect" {
-		if pkt.Type != agent.PacketType_DATA {
-			return nil
+		if pkt.Type == agent.PacketType_CLOSE_RSP {
+			return c.Http.Close()
+		} else if pkt.Type == agent.PacketType_DATA {
+			_, err := c.Http.Write(pkt.GetData().Data)
+			return err
 		}
-		writer := c.Http
-		_, err := writer.Write(pkt.GetData().Data)
-		return err
+
 	} else {
 		return fmt.Errorf("attempt to send via unrecognized connection type %q", c.Mode)
 	}
@@ -168,6 +169,19 @@ func (s *ProxyServer) serveRecvFrontend(stream agent.ProxyService_ProxyServer, r
 	// TODO: When stopped receiving from frontend, send CLOSE_REQ to backend.
 	klog.Infof(">>> Close streaming (id=%d)", firstConnID)
 
+	pkt := &agent.Packet{
+		Type: agent.PacketType_CLOSE_REQ,
+		Payload: &agent.Packet_CloseRequest{
+			CloseRequest: &agent.CloseRequest{
+				ConnectID: firstConnID,
+			},
+		},
+	}
+	if s.Backend != nil {
+		if err := s.Backend.Send(pkt); err != nil {
+			klog.Warningf(">>> CLOSE_REQ to Backend failed: %v", err)
+		}
+	}
 }
 
 func (s *ProxyServer) serveSend(stream agent.ProxyService_ProxyServer, sendCh <-chan *agent.Packet) {
@@ -250,19 +264,22 @@ func (s *ProxyServer) serveRecvBackend(stream agent.AgentService_ConnectServer, 
 			if client, ok := s.Frontends[resp.ConnectID]; ok {
 				if err := client.send(pkt); err != nil {
 					klog.Warningf("<<< DATA send to client stream error: %v", err)
+				} else {
+					klog.Infof("<<< DATA sent to frontend")
 				}
 			}
-			klog.Infof("<<< DATA sent to frontend")
 
 		case agent.PacketType_CLOSE_RSP:
 			resp := pkt.GetCloseResponse()
 			klog.Infof("<<< Received CLOSE_RSP(id=%d)", resp.ConnectID)
 			if client, ok := s.Frontends[resp.ConnectID]; ok {
 				if err := client.send(pkt); err != nil {
+					// Normal when frontend closes it.
 					klog.Warningf("<<< CLOSE_RSP send to client stream error: %v", err)
+				} else {
+					klog.Infof("<<< CLOSE_RSP sent to frontend")
 				}
 			}
-			klog.Infof("<<< CLOSE_RSP sent to frontend")
 
 		default:
 			klog.Warningf("<<< Unrecognized packet %+v", pkt)

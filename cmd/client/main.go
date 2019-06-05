@@ -196,6 +196,8 @@ func (c *Client) run(o *GrpcProxyClientOptions) error {
 	if err != nil {
 		return fmt.Errorf("failed to send request to client, got %v", err)
 	}
+	defer response.Body.Close() // TODO: proxy server should handle the case where Body isn't closed.
+
 	data, err := ioutil.ReadAll(response.Body)
 	if err != nil {
 		return fmt.Errorf("failed to read response from client, got %v", err)

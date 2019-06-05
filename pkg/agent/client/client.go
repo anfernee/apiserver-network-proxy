@@ -29,7 +29,7 @@ import (
 	"sigs.k8s.io/apiserver-network-proxy/proto/agent"
 )
 
-// Tunnel provides ability to dial a connection through itself
+// Tunnel provides ability to dial a connection through a tunnel.
 type Tunnel interface {
 	// Dial dials a connection
 	Dial(protocol, address string) (net.Conn, error)
@@ -40,6 +40,7 @@ type dialResult struct {
 	connid int64
 }
 
+// grpcTunnel implements Tunnel
 type grpcTunnel struct {
 	grpcConn    *grpc.ClientConn
 	client      agent.ProxyServiceClient
@@ -48,9 +49,9 @@ type grpcTunnel struct {
 	conns       map[int64]*conn
 }
 
-// CreateGrpcTunnel creates a grpc based tunnel
+// CreateGrpcTunnel creates a Tunnel to dial to a remote server through a
+// gRPC based proxy service.
 func CreateGrpcTunnel(address string, opts ...grpc.DialOption) (Tunnel, error) {
-	// TODO: mTLS
 	c, err := grpc.Dial(address, opts...)
 	if err != nil {
 		return nil, err
