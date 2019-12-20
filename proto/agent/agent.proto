@@ -23,7 +23,6 @@ service ProxyService {
 }
 
 service AgentService {
-  // Agent Identifier?
   rpc Connect(stream Packet) returns (stream Packet) {}
 }
 

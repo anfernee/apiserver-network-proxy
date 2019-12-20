@@ -17,12 +17,15 @@ limitations under the License.
 package agentserver
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"sync"
 
+	"google.golang.org/grpc/metadata"
 	"k8s.io/klog"
+	"sigs.k8s.io/apiserver-network-proxy/pkg/agent/common"
 	"sigs.k8s.io/apiserver-network-proxy/proto/agent"
 )
 
@@ -57,10 +60,13 @@ func (c *ProxyClientConnection) send(pkt *agent.Packet) error {
 
 // ProxyServer
 type ProxyServer struct {
-	backend agent.AgentService_ConnectServer
-	lock    sync.Mutex
+	// backends saves the mapping from agentID to gRPC stream
+	backends map[string]agent.AgentService_ConnectServer
+
+	lock sync.Mutex
 
 	// connID track
+	connAgent   map[int64]string
 	Frontends   map[int64]*ProxyClientConnection
 	PendingDial map[int64]*ProxyClientConnection
 	frontLock   sync.Mutex
@@ -112,20 +118,6 @@ func (s *ProxyServer) Proxy(stream agent.ProxyService_ProxyServer) error {
 	return <-stopCh
 }
 
-func (s *ProxyServer) getBackend() agent.AgentService_ConnectServer {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	return s.backend
-}
-
-func (s *ProxyServer) setBackend(backend agent.AgentService_ConnectServer) {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	s.backend = backend
-}
-
 func (s *ProxyServer) serveRecvFrontend(stream agent.ProxyService_ProxyServer, recvCh <-chan *agent.Packet) {
 	klog.Info("start serving frontend stream")
 
@@ -135,7 +127,8 @@ func (s *ProxyServer) serveRecvFrontend(stream agent.ProxyService_ProxyServer, r
 		switch pkt.Type {
 		case agent.PacketType_DIAL_REQ:
 			klog.Info(">>> Received DIAL_REQ")
-			backend := s.getBackend()
+
+			backend := s.getRandomBackend()
 
 			if backend == nil {
 				klog.Info(">>> No backend found; drop")
@@ -155,8 +148,21 @@ func (s *ProxyServer) serveRecvFrontend(stream agent.ProxyService_ProxyServer, r
 			klog.Info(">>> DIAL_REQ sent to backend") // got this. but backend didn't receive anything.
 
 		case agent.PacketType_CLOSE_REQ:
-			klog.Infof(">>> Received CLOSE_REQ(id=%d)", pkt.GetCloseRequest().ConnectID)
-			backend := s.getBackend()
+			connid := pkt.GetCloseRequest().ConnectID
+			klog.Infof(">>> Received CLOSE_REQ(id=%d)", connid)
+
+			// Routed to the original backend
+			agentID := s.getAgent(connid)
+			if agentID == "" {
+				klog.Warningf("CLOSE_REQ(id=%d) dropped: no valid agent found"), connid)
+				continue
+			}
+
+			backend := s.getBackend(agentID)
+			if backend == nil {
+				klog.Warningf("CLOSE_REQ(id=%d) dropped: no valid backend found"), connid)
+				continue
+			}
 
 			if backend == nil {
 				klog.Info(">>> No backend found; drop")
@@ -224,19 +230,29 @@ func (s *ProxyServer) serveSend(stream agent.ProxyService_ProxyServer, sendCh <-
 }
 
 // Connect is for agent to connect to ProxyServer as next hop
-func (s *ProxyServer) Connect(stream agent.AgentService_ConnectServer) error {
-	klog.Info("connect request from Backend")
+func (s *ProxyServer) Connect(stream agent.AgentService_ConnectServer) error {	
+	md, ok := metadata.FromIncomingContext(stream.Context())
+	if !ok {
+		klog.Info("Missing metadata, dropping connect")
+		return errors.New("Missing metadata")
+	}
+	
+	agentID := md[common.AgentIDKey]
+	if agentID == "" {
+		klog.Info("Missing agent-id in metadata, dropping connect")
+		return errors.New("Missing agent-id in metadata")
+	}
 
-	recvCh := make(chan *agent.Packet, 10)
-	stopCh := make(chan error)
-
-	klog.Infof("register Backend %v", stream)
-	s.setBackend(stream)
+	klog.Info("connect request from agent %s", agentID)
+	s.setBackend(agentID, stream)
 
 	defer func() {
 		klog.Infof("unregister Backend %v", stream)
-		s.setBackend(nil)
+		s.deleteBackend(agentID)
 	}()
+
+	recvCh := make(chan *agent.Packet, 10)
+	stopCh := make(chan error)
 
 	go s.serveRecvBackend(stream, recvCh)
 
@@ -336,4 +352,42 @@ func (s *ProxyServer) serveRecvBackend(stream agent.AgentService_ConnectServer, 
 	}
 
 	klog.Infof("<<< Close streaming (id=%d)", firstConnID)
+}
+
+func (s *ProxyServer) getBackend(agentID string) agent.AgentService_ConnectServer {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	return s.backends[agentID]
+}
+
+func (s *ProxyServer) getRandomBackend() agent.AgentService_ConnectServer {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	for _, v := range s.backends {
+		return v
+	}
+	return nil
+}
+
+func (s *ProxyServer) setBackend(agentID string, backend agent.AgentService_ConnectServer) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	s.backends[agentID] = backend
+}
+
+func (s *ProxyServer) deleteBackend(agentID string) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	delete(s.backends, agentID)
+}
+
+func (s *ProxyServer) getAgent(connID int64) string {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	return s.connAgent[connID]
 }

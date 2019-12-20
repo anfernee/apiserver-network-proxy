@@ -11,7 +11,6 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"k8s.io/klog"
 	"sigs.k8s.io/apiserver-network-proxy/proto/agent"
-	// "k8s.io/client-go/util/retry"
 )
 
 const (
