@@ -73,8 +73,9 @@ func (t *Tunnel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		HTTP:      conn,
 		connected: connected,
 	}
-	t.Server.PendingDial[random] = connection
-	backend, err := t.Server.randomBackend()
+	// TODO(anfernee): Hacky. Need abstraction
+	t.Server.state.pendingDial[random] = connection
+	backend, err := t.Server.agentServer.randomBackend()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("currently no tunnels available: %v", err), http.StatusInternalServerError)
 	}
@@ -131,5 +132,6 @@ func (t *Tunnel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	klog.Infof("Stopping transfer to %q", r.Host)
-	delete(t.Server.Frontends, connection.connectID)
+	// TODO(anfernee): Hacky. Need abstraction.
+	delete(t.Server.state.frontends, connection.connectID)
 }

@@ -5,6 +5,7 @@ go 1.12
 require (
 	github.com/beorn7/perks v1.0.0 // indirect
 	github.com/golang/protobuf v1.2.0
+	github.com/google/uuid v1.1.1
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect
 	github.com/prometheus/client_golang v0.9.2
 	github.com/prometheus/client_model v0.0.0-20190129233127-fd36f4220a90 // indirect

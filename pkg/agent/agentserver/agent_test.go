@@ -34,7 +34,7 @@ func TestAddRemoveBackends(t *testing.T) {
 	conn22 := new(fakeAgentService_ConnectServer)
 	conn3 := new(fakeAgentService_ConnectServer)
 
-	p := NewProxyServer("", 1)
+	p := newAgentServer("", 1, nil)
 	p.addBackend("agent1", conn1)
 	p.removeBackend("agent1", conn1)
 	expectedBackends := make(map[string][]agent.AgentService_ConnectServer)
@@ -46,7 +46,7 @@ func TestAddRemoveBackends(t *testing.T) {
 		t.Errorf("expected %v, got %v", e, a)
 	}
 
-	p = NewProxyServer("", 1)
+	p = newAgentServer("", 1, nil)
 	p.addBackend("agent1", conn1)
 	p.addBackend("agent1", conn12)
 	p.addBackend("agent2", conn2)
